@@ -1,11 +1,15 @@
-const uuid = require('uuid');
-const express = require('express');
-const onFinished = require('on-finished');
-const bodyParser = require('body-parser');
-const path = require('path');
-const port = 3000;
-const fs = require('fs');
+import { v4 as uuidv4 } from 'uuid';
+import express from 'express';
+import onFinished from 'on-finished';
+import bodyParser from 'body-parser';
+import path from 'path';
+import fs from 'fs';
+import { fileURLToPath } from 'url';
 
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+
+const port = 3000;
 const app = express();
 app.use(bodyParser.json());
 app.use(bodyParser.urlencoded({ extended: true }));
@@ -42,14 +46,13 @@ class Session {
         return this.#sessions[key];
     }
 
-    init(res) {
-        const sessionId = uuid.v4();
+    init() {
+        const sessionId = uuidv4();
         this.set(sessionId);
-
         return sessionId;
     }
 
-    destroy(req, res) {
+    destroy(req) {
         const sessionId = req.sessionId;
         delete this.#sessions[sessionId];
         this.#storeSessions();

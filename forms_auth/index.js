@@ -1,57 +1,69 @@
-const uuid = require('uuid');
-const express = require('express');
-const cookieParser = require('cookie-parser');
-const onFinished = require('on-finished');
-const bodyParser = require('body-parser');
-const path = require('path');
-const port = 3000;
-const fs = require('fs');
+import { v4 as uuidv4 } from 'uuid'; // для генерації унікальних ІД
+import express from 'express'; // для створення web застосунку
+import cookieParser from 'cookie-parser'; // для роботи з cookies у express
+import onFinished from 'on-finished'; // виконує функцію після завершення HTTP відповіді
+import bodyParser from 'body-parser'; // для парсингу тіла зпиту
+import path from 'path'; // для роботи з шляхами до вайлів
+import fs from 'fs';  // для роботи з файловою ситемою
+import { fileURLToPath } from 'url';
 
-const app = express();
-app.use(bodyParser.json());
-app.use(bodyParser.urlencoded({ extended: true }));
-app.use(cookieParser());
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 
-const SESSION_KEY = 'session';
+const port = 3000; // порт
+const app = express(); // створення веб застосунку
+app.use(bodyParser.json()); // парсинг тіла запиту JSON формату
+app.use(bodyParser.urlencoded({ extended: true })); // парсинг форматованих даних з форму (extended: true - парсить вкладені об'єкти)
+app.use(cookieParser()); // читає cookie з запиту
+
+const SESSION_KEY = 'session'; // назва даних у cookie
 
 class Session {
     #sessions = {}
 
     constructor() {
         try {
+            // читаємо дані про сесії з файлу збережень сесій
             this.#sessions = fs.readFileSync('./sessions.json', 'utf8');
+            // парсимо дані про сесії у список
             this.#sessions = JSON.parse(this.#sessions.trim());
 
             console.log(this.#sessions);
         } catch(e) {
+            // створюємо новий список, якщо немає збережень
             this.#sessions = {};
         }
     }
 
     #storeSessions() {
+        // зберігаємо список сесій у файл
         fs.writeFileSync('./sessions.json', JSON.stringify(this.#sessions), 'utf-8');
     }
 
+    // додати сесію
     set(key, value) {
         if (!value) {
             value = {};
         }
         this.#sessions[key] = value;
-        this.#storeSessions();
+        this.#storeSessions(); // зберегти
     }
 
+    // отримати дані сесії
     get(key) {
         return this.#sessions[key];
     }
 
+    // створити нову сесію
     init(res) {
-        const sessionId = uuid.v4();
-        res.set('Set-Cookie', `${SESSION_KEY}=${sessionId}; HttpOnly`);
-        this.set(sessionId);
+        const sessionId = uuidv4(); // генерація ІД сесії
+        res.set('Set-Cookie', `${SESSION_KEY}=${sessionId}; HttpOnly`); // створення куку для сесії
+        this.set(sessionId); // додати
 
         return sessionId;
     }
 
+    // знищити сесію
     destroy(req, res) {
         const sessionId = req.sessionId;
         delete this.#sessions[sessionId];
@@ -66,6 +78,7 @@ app.use((req, res, next) => {
     let currentSession = {};
     let sessionId;
 
+    // отримання/створення сесії
     if (req.cookies[SESSION_KEY]) {
         sessionId = req.cookies[SESSION_KEY];
         currentSession = sessions.get(sessionId);
@@ -80,6 +93,7 @@ app.use((req, res, next) => {
     req.session = currentSession;
     req.sessionId = sessionId;
 
+    // збереження сесії піля відправки відповіді клієнту
     onFinished(req, () => {
         const currentSession = req.session;
         const sessionId = req.sessionId;
