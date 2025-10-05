@@ -1,0 +1,311 @@
+<!DOCTYPE html>
+<html lang="en">
+
+    <head>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <title>Messenger</title>
+        <script src="https://unpkg.com/axios/dist/axios.min.js"></script>
+    </head>
+
+    <body>
+        <main id="main-holder">
+            <h1 id="message-header">Messenger</h1>
+
+            <form id="message-form">
+                <input type="text" name="message" id="message-field" class="message-form-field" placeholder="text">
+                <input type="submit" value="send" id="message-button" class="message-form-submit">
+                <input type="file" name="file" id="file-field"  class="message-form-field" accept=".txt">
+                <input type="submit" value="send-file" id="file-button" class="message-form-submit">
+                <input type="text" name="file-name" id="file-load" class="message-form-field" readonly>
+                <input type="submit" value="load-file" id="load-button" class="message-form-submit">
+            </form>
+
+        </main>
+    </body>
+
+
+    <style>
+        html {
+            height: 100%;
+        }
+
+        body {
+            height: 100%;
+            margin: 0;
+            font-family: Arial, Helvetica, sans-serif;
+            display: grid;
+            justify-items: center;
+            align-items: center;
+            background-color: #3a3a3a;
+        }
+
+        #main-holder {
+            width: 50%;
+            height: 70%;
+            display: grid;
+            justify-items: center;
+            align-items: center;
+            background-color: white;
+            border-radius: 7px;
+            box-shadow: 0px 0px 5px 2px black;
+        }
+
+        #message-form {
+            align-self: flex-start;
+            display: grid;
+            justify-items: center;
+            align-items: center;
+        }
+
+        .message-form-field::placeholder {
+            color: #3a3a3a;
+        }
+
+        .message-form-field {
+            border: none;
+            border-bottom: 1px solid #3a3a3a;
+            margin-bottom: 10px;
+            margin-top: 10px;
+            border-radius: 3px;
+            outline: none;
+            padding: 0px 0px 5px 5px;
+        }
+
+        #message-form-submit {
+            width: 100%;
+            padding: 7px;
+            margin-bottom: 10px;
+            margin-top: 10px;
+            border: none;
+            border-radius: 5px;
+            color: white;
+            font-weight: bold;
+            background-color: #3a3a3a;
+            cursor: pointer;
+            outline: none;
+        }
+    </style>
+
+    <script type="module">
+        //------------------------------------------------------------------------------------------------------------------------------
+        const clientRandom = Array.from(crypto.getRandomValues(new Uint8Array(32))).map(b => b.toString(16).padStart(2,'0')).join('');
+        console.log("\nClientRandom: ", clientRandom);
+
+        const helloResponse = await fetch('/hello', {
+            method:'POST', 
+            headers:{'Content-Type':'application/json'},
+            body: JSON.stringify({ 
+                clientRandom 
+            })
+        }).then((response) => response.json());
+
+        //------------------------------------------------------------------------------------------------------------------------------
+        const { serverRandom, serverPublicKeyPem} = helloResponse;
+        console.log("\nServerRandom: ", serverRandom);
+
+        const premaster = crypto.getRandomValues(new Uint8Array(48));
+        console.log("\nPremaster: ", BufferToHex(premaster));
+
+        const spki = PemToArrayBuffer(serverPublicKeyPem);
+        const serverPublicKey = await crypto.subtle.importKey(
+            'spki',
+            spki,
+            { name: 'RSA-OAEP', hash: 'SHA-256' },
+            false,
+            ['encrypt']
+        );
+
+        const encryptPremaster = await crypto.subtle.encrypt({ name: 'RSA-OAEP' }, serverPublicKey, premaster);
+        const encryptPremasterBase64 = BufferToBase64(encryptPremaster);
+
+        const premResponse = await fetch('/premaster', {
+            method:'POST', 
+            headers:{'Content-Type':'application/json'},
+            body: JSON.stringify({ 
+                encryptPremasterBase64: encryptPremasterBase64 
+            })
+        }).then((response) => response.json());
+
+        //------------------------------------------------------------------------------------------------------------------------------
+        const sessionKey = await GenerateSessionKey(premaster.buffer, clientRandom, serverRandom);
+        const rawKey = await crypto.subtle.exportKey('raw', sessionKey);
+        console.log("\nSessionKey :", BufferToHex(new Uint8Array(rawKey)));
+
+        const serverReadyPlain = await AesGcmDecrypt(sessionKey, premResponse.ready.initVector, premResponse.ready.encryptText);
+        console.log("\nServerReadyPlain: ", serverReadyPlain);
+
+        console.log("\nMy ClientReadyPlain: client ready");
+        const clientReadyEncrypt = await AesGcmEncrypt(sessionKey, 'client ready');
+
+        const readyResponse = await fetch('/ready', {
+            method:'POST', 
+            headers:{'Content-Type':'application/json'},
+            body: JSON.stringify({ 
+                ready: clientReadyEncrypt 
+            })
+        }).then((response) => response.json());
+
+        const confirmPlain = await AesGcmDecrypt(sessionKey, readyResponse.confirm.initVector, readyResponse.confirm.encryptText);
+        console.log("\nConfirmPlain: ", confirmPlain);
+
+        //------------------------------------------------------------------------------------------------------------------------------
+        const messageField = document.getElementById("message-field");
+        const sendTextButton = document.getElementById("message-button");
+
+        sendTextButton.addEventListener("click", async (e) => {
+            e.preventDefault();
+            const message = messageField.value;
+            messageField.value = '';
+
+            if (!message) {
+                console.log("\nMessage is empty");
+                return;
+            }
+            
+            const messageEncrypt = await AesGcmEncrypt(sessionKey, message);
+
+            const sendResponse = await fetch('/send', {
+                method:'POST', 
+                headers:{'Content-Type':'application/json'},
+                body: JSON.stringify({ 
+                    messageEncrypt: messageEncrypt 
+                })
+            }).then((response) => response.json());
+
+            const responseText = await AesGcmDecrypt(sessionKey, sendResponse.answer.initVector, sendResponse.answer.encryptText);
+            console.log("\nResponse Message: ", responseText);
+        })
+
+        //------------------------------------------------------------------------------------------------------------------------------
+        const fileField = document.getElementById("file-field");
+        const sendFileButton = document.getElementById("file-button");
+        const fileName = document.getElementById("file-load");
+
+        let responseFileText;
+
+        sendFileButton.addEventListener("click", async (e) => {
+            e.preventDefault();
+
+            const file = fileField.files[0];
+            if (!file) {
+                console.log("\nFile isn't");
+                return;
+            }
+
+            fileField.value = '';
+            
+            const arrayBuffer = await file.arrayBuffer();
+
+            const fileEncrypt = await AesGcmEncrypt(sessionKey, new Uint8Array(arrayBuffer));
+
+            const sendResponse = await fetch('/send/file', {
+                method:'POST', 
+                headers:{'Content-Type':'application/json'},
+                body: JSON.stringify({ 
+                    fileEncrypt: fileEncrypt 
+                })
+            }).then((response) => response.json());
+
+            responseFileText = await AesGcmDecrypt(sessionKey, sendResponse.answer.initVector, sendResponse.answer.encryptText);
+            //console.log("Response file:", responseFileText);
+            fileName.value = 'Response.txt';
+        })
+
+        const loadFileButton = document.getElementById("load-button");
+
+        loadFileButton.addEventListener("click", async (e) => {
+            e.preventDefault();
+
+            if (!responseFileText) {
+                console.log("\nResponseFileText is empty");
+                return;
+            }
+
+            const blob = new Blob([responseFileText], { type: 'text/plain' });
+            const url = URL.createObjectURL(blob);
+
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = 'Response.txt';
+            a.click();
+            URL.revokeObjectURL(url);
+
+            responseFileText = null;
+            fileName.value = '';
+        })
+
+        //------------------------------------------------------------------------------------------------------------------------------
+        function PemToArrayBuffer(pem) {
+            const b64 = pem
+                .replace(/-----BEGIN [^-]+-----/, '')
+                .replace(/-----END [^-]+-----/, '')
+                .replace(/\s+/g, '');
+            const str = atob(b64);
+            const buf = new Uint8Array(str.length);
+            for (let i = 0; i < str.length; i++) buf[i] = str.charCodeAt(i);
+            return buf.buffer;
+        }
+
+        //------------------------------------------------------------------------------------------------------------------------------
+        function BufferToBase64(buf) {
+            const bytes = new Uint8Array(buf);
+            let binary = '';
+            for (let i=0;i<bytes.byteLength;i++) binary += String.fromCharCode(bytes[i]);
+            return btoa(binary);
+        }
+
+        //------------------------------------------------------------------------------------------------------------------------------
+        function Base64ToBuffer(b64) {
+            const binary = atob(b64);
+            const buf = new Uint8Array(binary.length);
+            for (let i = 0; i < binary.length; i++) buf[i] = binary.charCodeAt(i);
+            return buf;
+        }
+
+        //------------------------------------------------------------------------------------------------------------------------------
+        function HexToBuffer(hex) {
+            if (hex.length % 2 !== 0) throw new Error("Invalid hex string");
+            const buffer = new Uint8Array(hex.length / 2);
+            for (let i = 0; i < buffer.length; i++) {
+                buffer[i] = parseInt(hex.substr(i * 2, 2), 16);
+            }
+            return buffer;
+        }
+
+        //------------------------------------------------------------------------------------------------------------------------------
+        function BufferToHex(buf) {
+            return Array.from(buf).map(b => b.toString(16).padStart(2, '0')).join('');
+        }
+
+        //------------------------------------------------------------------------------------------------------------------------------
+        async function GenerateSessionKey(premasterBuffer, clientRandom, serverRandom) {
+            const clientBytes = Base64ToBuffer(clientRandom);
+            const serverBytes = Base64ToBuffer(serverRandom);
+            const keyBuffer = new Uint8Array(premasterBuffer.byteLength + clientBytes.length + serverBytes.length);
+            keyBuffer.set(new Uint8Array(premasterBuffer), 0);
+            keyBuffer.set(clientBytes, premasterBuffer.byteLength);
+            keyBuffer.set(serverBytes, premasterBuffer.byteLength + clientBytes.length);
+            const keyHash = await crypto.subtle.digest('SHA-256', keyBuffer.buffer);
+            return crypto.subtle.importKey('raw', keyHash, { name: 'AES-GCM' }, true, ['encrypt','decrypt']);
+        }
+
+        //------------------------------------------------------------------------------------------------------------------------------
+        async function AesGcmEncrypt(sessionKey, plainText) {
+            const initVector = crypto.getRandomValues(new Uint8Array(12));
+            const bytesText = (typeof plainText === "string") 
+                ? new TextEncoder().encode(plainText)
+                : plainText;
+            const encryptText = await crypto.subtle.encrypt({ name: 'AES-GCM', iv: initVector }, sessionKey, bytesText);
+            return { initVector: BufferToBase64(initVector.buffer), encryptText: BufferToBase64(encryptText) };
+        }
+
+        //------------------------------------------------------------------------------------------------------------------------------
+        async function AesGcmDecrypt(sessionKey, initVector_b64, encryptText_b64) {
+            const initVector = Base64ToBuffer(initVector_b64);
+            const encryptText = Base64ToBuffer(encryptText_b64);
+            const decryptText = await crypto.subtle.decrypt({ name: 'AES-GCM', iv: new Uint8Array(initVector) }, sessionKey, encryptText);
+            return new TextDecoder().decode(decryptText);
+        }
+    </script>
+</html>
